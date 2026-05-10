@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """Generate a CrowdStrike Recon report of exposed passwords grouped by monitoring rule.
 
 This script reads Falcon API credentials from environment variables or a local .env file,
@@ -34,6 +36,8 @@ FALCON_ENV_KEYS = (
     "FALCON_BASE_URL",
 )
 DEFAULT_FALCON_BASE_URL = "https://api.eu-1.crowdstrike.com"
+APP_VERSION = "0.01a"
+CONFIG_DIR_NAME = "recon-exposed-credentials-report"
 
 PASSWORD_KEYWORDS = {
     "password",
@@ -131,9 +135,31 @@ def print_logo() -> None:
                                            /_/
     """
     print(logo)
-    print(f"Version 0.01a | {datetime.now().strftime('%d.%m.%Y')}")
+    print(f"Version {APP_VERSION} | {datetime.now().strftime('%d.%m.%Y')}")
     print("Query CrowdStrike Recon for exposed credential findings by monitoring rule.")
     print()
+
+
+def config_dir() -> Path:
+    base_dir = os.environ.get("XDG_CONFIG_HOME")
+    if base_dir:
+        return Path(base_dir).expanduser() / CONFIG_DIR_NAME
+    return Path.home() / ".config" / CONFIG_DIR_NAME
+
+
+def default_dotenv_path() -> Path:
+    return config_dir() / ".env"
+
+
+def resolve_dotenv_path(script_dir: Path) -> Path:
+    config_dotenv_path = default_dotenv_path()
+    legacy_dotenv_path = script_dir / ".env"
+
+    if config_dotenv_path.exists():
+        return config_dotenv_path
+    if legacy_dotenv_path.exists():
+        return legacy_dotenv_path
+    return config_dotenv_path
 
 
 def is_recon_access_error(exc: FalconAPIError) -> bool:
@@ -240,6 +266,7 @@ def load_dotenv(dotenv_path: Path) -> None:
 
 
 def write_dotenv_values(dotenv_path: Path, updates: dict[str, str]) -> None:
+    dotenv_path.parent.mkdir(parents=True, exist_ok=True)
     lines = dotenv_path.read_text(encoding="utf-8").splitlines() if dotenv_path.exists() else []
     updated_keys: set[str] = set()
     output_lines: list[str] = []
@@ -323,6 +350,25 @@ def prompt_falcon_credentials(dotenv_path: Path) -> None:
                 os.environ[key] = value
             return
         print("Invalid selection. Enter 'Y' to update these credentials or 'N' to keep them.")
+
+
+def has_complete_falcon_configuration(dotenv_path: Path) -> bool:
+    dotenv_values = read_dotenv_values(dotenv_path)
+    return all((dotenv_values.get(key) or os.environ.get(key, "")).strip() for key in FALCON_ENV_KEYS)
+
+
+def run_initial_setup(dotenv_path: Path) -> None:
+    print("Initial setup")
+    print(f"Configuration file: {dotenv_path}")
+    setup_values = {
+        "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
+        "FALCON_CLIENT_SECRET": prompt_non_empty_value("FALCON_CLIENT_SECRET"),
+        "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
+    }
+    write_dotenv_values(dotenv_path, setup_values)
+    for key, value in setup_values.items():
+        os.environ[key] = value
+    print(f"Saved configuration to {dotenv_path}")
 
 
 def require_env(name: str) -> str:
@@ -495,6 +541,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         choices=DAY_OPTIONS,
         help="Look back this many days when querying notifications.",
+    )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Run the initial setup routine and save Falcon credentials.",
     )
     return parser.parse_args()
 
@@ -1056,14 +1107,17 @@ def print_report(findings: list[Finding]) -> None:
 
 def main() -> int:
     script_dir = Path(__file__).resolve().parent
-    dotenv_path = script_dir / ".env"
+    dotenv_path = resolve_dotenv_path(script_dir)
     load_dotenv(dotenv_path)
     args = parse_args()
 
     while True:
         clear_screen()
         print_logo()
-        prompt_falcon_credentials(dotenv_path)
+        if args.setup or not has_complete_falcon_configuration(dotenv_path):
+            run_initial_setup(dotenv_path)
+        else:
+            prompt_falcon_credentials(dotenv_path)
 
         try:
             client = build_client()
@@ -1161,7 +1215,7 @@ def main() -> int:
             break
 
     if all_findings and prompt_write_csv():
-        file_path = write_csv_report(script_dir, all_findings, selected_rule)
+        file_path = write_csv_report(Path.cwd(), all_findings, selected_rule)
         print(f"CSV written to: {file_path}")
 
     print("Thanks for using Recon Password Report.")
