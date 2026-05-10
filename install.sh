@@ -11,18 +11,7 @@ log() {
 }
 
 ensure_homebrew() {
-  if command -v brew >/dev/null 2>&1; then
-    return
-  fi
-
-  log "Homebrew not found. Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-  elif [[ -x /usr/local/bin/brew ]]; then
-    eval "$(/usr/local/bin/brew shellenv)"
-  fi
+  return
 }
 
 ensure_python3() {
@@ -30,9 +19,9 @@ ensure_python3() {
     return
   fi
 
-  ensure_homebrew
-  log "Installing Python 3..."
-  brew install python
+  log "Python 3 is required but was not found on this system."
+  log "Install Python 3 first, then run this installer again."
+  exit 1
 }
 
 ensure_pip() {

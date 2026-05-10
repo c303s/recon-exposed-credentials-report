@@ -4,6 +4,8 @@ Query CrowdStrike Falcon Intelligence Recon for exposed usernames and passwords 
 
 ## Install
 
+Prerequisite: Python 3 must already be installed.
+
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main/install.sh)"
 ```
