@@ -6,6 +6,8 @@ Query CrowdStrike Falcon Intelligence Recon for exposed usernames and passwords 
 
 Prerequisite: Python 3.10, 3.11, 3.12, or 3.13 must already be installed.
 
+No separate FalconPy install is needed. The installer handles it.
+
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main/install.sh)"
 ```
@@ -13,6 +15,18 @@ Prerequisite: Python 3.10, 3.11, 3.12, or 3.13 must already be installed.
 ## Setup
 
 The installer runs setup automatically.
+
+It will ask for:
+
+- `FALCON_CLIENT_ID`
+- `FALCON_CLIENT_SECRET`
+- `FALCON_BASE_URL`
+
+Suggested base URL:
+
+```text
+https://api.eu-1.crowdstrike.com
+```
 
 If only Python 3.14+ is installed, install a supported Python version first and rerun the installer.
 
@@ -38,18 +52,6 @@ Credentials are stored in:
 
 ```text
 ~/.config/recon-exposed-credentials-report/.env
-```
-
-The setup routine asks for:
-
-- `FALCON_CLIENT_ID`
-- `FALCON_CLIENT_SECRET`
-- `FALCON_BASE_URL`
-
-Suggested base URL:
-
-```text
-https://api.eu-1.crowdstrike.com
 ```
 
 ## Run
