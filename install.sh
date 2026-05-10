@@ -8,7 +8,7 @@ SCRIPT_URL="$REPO_RAW_BASE/recon_exposed_credentials_report.py"
 PYTHON_BIN=""
 
 log() {
-  printf '[install] %s\n' "$1"
+  printf '[install] %s\n' "$1" >&2
 }
 
 ensure_homebrew() {

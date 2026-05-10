@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import os
+import ssl
 import sys
 import threading
 import time
@@ -116,6 +117,7 @@ class ReconClient:
         self.base_url = base_url.rstrip("/")
         self.access_token = ""
         self.token_expires_at = 0.0
+        self.ssl_context = self._build_ssl_context()
 
     def query_rules(self, **params: Any) -> dict[str, Any]:
         return self._get("/recon/queries/rules/v1", params)
@@ -203,7 +205,7 @@ class ReconClient:
     ) -> dict[str, Any]:
         req = request.Request(url, data=body, headers=headers, method=method)
         try:
-            with request.urlopen(req, timeout=120) as response:
+            with request.urlopen(req, timeout=120, context=self.ssl_context) as response:
                 payload = response.read()
                 return {
                     "status_code": response.getcode(),
@@ -216,6 +218,22 @@ class ReconClient:
             }
         except error.URLError as exc:
             raise FalconAPIError(f"Request to {url} failed: {exc.reason}") from exc
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        explicit_cert_file = os.environ.get("SSL_CERT_FILE", "").strip()
+        if explicit_cert_file and Path(explicit_cert_file).is_file():
+            return ssl.create_default_context(cafile=explicit_cert_file)
+
+        for candidate in (
+            "/etc/ssl/cert.pem",
+            "/private/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        ):
+            if Path(candidate).is_file():
+                return ssl.create_default_context(cafile=candidate)
+
+        return ssl.create_default_context()
 
     def _decode_body(self, payload: bytes) -> Any:
         if not payload:
