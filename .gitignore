@@ -1,4 +1,5 @@
 # Ignore __pycache__ and build artifacts
+.env
 __pycache__/
 *.pyc
 *.pyo
