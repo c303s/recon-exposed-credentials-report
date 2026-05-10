@@ -15,29 +15,15 @@ ensure_homebrew() {
   return
 }
 
-supports_falconpy() {
-  local candidate="$1"
-  "$candidate" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)'
-}
-
 select_python3() {
   local candidate
   for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
     if ! command -v "$candidate" >/dev/null 2>&1; then
       continue
     fi
-    if supports_falconpy "$candidate"; then
-      PYTHON_BIN="$candidate"
-      return
-    fi
+    PYTHON_BIN="$candidate"
+    return
   done
-
-  if command -v python3 >/dev/null 2>&1; then
-    log "Installed Python version is not supported by FalconPy."
-    log "Install Python 3.10, 3.11, 3.12, or 3.13, then run this installer again."
-    log "Current Python: $(python3 --version 2>&1)"
-    exit 1
-  fi
 
   log "Python 3 is required but was not found on this system."
   log "Install Python 3 first, then run this installer again."

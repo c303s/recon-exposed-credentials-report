@@ -4,7 +4,7 @@ Query CrowdStrike Falcon Intelligence Recon for exposed usernames and passwords 
 
 ## Install
 
-Prerequisite: Python 3.10, 3.11, 3.12, or 3.13 must already be installed.
+Prerequisite: Python 3 must already be installed.
 
 No separate FalconPy install is needed. The installer handles it.
 
@@ -27,8 +27,6 @@ Suggested base URL:
 ```text
 https://api.eu-1.crowdstrike.com
 ```
-
-If only Python 3.14+ is installed, install a supported Python version first and rerun the installer.
 
 If you want to run setup again later:
 
