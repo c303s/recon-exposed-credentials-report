@@ -30,16 +30,6 @@ select_python3() {
   exit 1
 }
 
-ensure_pip() {
-  "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
-}
-
-install_falconpy() {
-  log "Installing FalconPy..."
-  "$PYTHON_BIN" -m pip install --user --upgrade pip
-  "$PYTHON_BIN" -m pip install --user falconpy
-}
-
 choose_install_dir() {
   if [[ -w /usr/local/bin ]]; then
     printf '/usr/local/bin'
@@ -69,8 +59,6 @@ install_cli() {
 main() {
   select_python3
   log "Using $($PYTHON_BIN --version 2>&1)"
-  ensure_pip
-  install_falconpy
 
   local installed_cli
   installed_cli="$(install_cli)"

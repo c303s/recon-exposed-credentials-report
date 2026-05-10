@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sys
 import threading
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+from urllib import error, parse, request
 
 
 PAGE_SIZE = 500
@@ -105,6 +107,155 @@ class RuleChoice:
 
 class FalconAPIError(RuntimeError):
     """Raised when a Falcon API request fails."""
+
+
+class ReconClient:
+    def __init__(self, client_id: str, client_secret: str, base_url: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.base_url = base_url.rstrip("/")
+        self.access_token = ""
+        self.token_expires_at = 0.0
+
+    def query_rules(self, **params: Any) -> dict[str, Any]:
+        return self._get("/recon/queries/rules/v1", params)
+
+    def get_rules(self, ids: Iterable[str]) -> dict[str, Any]:
+        return self._get("/recon/entities/rules/v1", {"ids": list(ids)})
+
+    def query_notifications(self, **params: Any) -> dict[str, Any]:
+        return self._get("/recon/queries/notifications/v1", params)
+
+    def query_notifications_exposed_data_records(self, **params: Any) -> dict[str, Any]:
+        return self._get("/recon/queries/notifications-exposed-data-records/v1", params)
+
+    def get_notifications_exposed_data_records(self, ids: Iterable[str]) -> dict[str, Any]:
+        return self._get("/recon/entities/notifications-exposed-data-records/v1", {"ids": list(ids)})
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._ensure_token()
+        return self._request("GET", path, params=params, retry_on_unauthorized=True)
+
+    def _ensure_token(self) -> None:
+        if self.access_token and time.time() < self.token_expires_at - 60:
+            return
+
+        token_url = f"{self.base_url}/oauth2/token"
+        body = parse.urlencode(
+            {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            }
+        ).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        response = self._send_request("POST", token_url, headers=headers, body=body)
+        status_code = int(response.get("status_code", 0) or 0)
+        response_body = response.get("body", {})
+        if status_code >= 400:
+            raise FalconAPIError(
+                f"oauth2/token failed with status {status_code or 'unknown'}: {self._format_error_details(response_body)}"
+            )
+
+        if not isinstance(response_body, dict) or not response_body.get("access_token"):
+            raise FalconAPIError("oauth2/token did not return an access token.")
+
+        self.access_token = str(response_body["access_token"])
+        expires_in = int(response_body.get("expires_in", 1800) or 1800)
+        self.token_expires_at = time.time() + max(expires_in, 60)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        retry_on_unauthorized: bool = False,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        if params:
+            query = parse.urlencode(self._normalize_params(params), doseq=True)
+            if query:
+                url = f"{url}?{query}"
+
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}",
+        }
+        response = self._send_request(method, url, headers=headers)
+        status_code = int(response.get("status_code", 0) or 0)
+        if retry_on_unauthorized and status_code == 401:
+            self.access_token = ""
+            self.token_expires_at = 0.0
+            self._ensure_token()
+            headers["Authorization"] = f"Bearer {self.access_token}"
+            response = self._send_request(method, url, headers=headers)
+
+        return response
+
+    def _send_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None = None,
+    ) -> dict[str, Any]:
+        req = request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with request.urlopen(req, timeout=120) as response:
+                payload = response.read()
+                return {
+                    "status_code": response.getcode(),
+                    "body": self._decode_body(payload),
+                }
+        except error.HTTPError as exc:
+            return {
+                "status_code": exc.code,
+                "body": self._decode_body(exc.read()),
+            }
+        except error.URLError as exc:
+            raise FalconAPIError(f"Request to {url} failed: {exc.reason}") from exc
+
+    def _decode_body(self, payload: bytes) -> Any:
+        if not payload:
+            return {}
+        try:
+            return json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"raw": payload.decode("utf-8", errors="replace")}
+
+    def _normalize_params(self, params: dict[str, Any]) -> list[tuple[str, str]]:
+        normalized: list[tuple[str, str]] = []
+        for key, value in params.items():
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    if item is None:
+                        continue
+                    normalized.append((key, str(item)))
+                continue
+            if value == "":
+                continue
+            normalized.append((key, str(value)))
+        return normalized
+
+    def _format_error_details(self, body: Any) -> str:
+        if isinstance(body, dict):
+            errors = body.get("errors") or []
+            if isinstance(errors, list) and errors:
+                parts = []
+                for item in errors:
+                    if not isinstance(item, dict):
+                        continue
+                    code = item.get("code")
+                    message = item.get("message")
+                    if code or message:
+                        parts.append(f"{code or 'error'}: {message or 'Unknown error'}")
+                if parts:
+                    return "; ".join(parts)
+        return "No error details returned"
 
 
 class RestartRequested(RuntimeError):
@@ -380,14 +531,7 @@ def require_env(name: str) -> str:
 
 
 def build_client() -> Any:
-    try:
-        from falconpy import Recon
-    except ImportError as exc:
-        raise RuntimeError(
-            "falconpy is not installed. Install dependencies with 'pip install -r requirements.txt'."
-        ) from exc
-
-    return Recon(
+    return ReconClient(
         client_id=require_env("FALCON_CLIENT_ID"),
         client_secret=require_env("FALCON_CLIENT_SECRET"),
         base_url=require_env("FALCON_BASE_URL"),
