@@ -53,7 +53,7 @@ install_cli() {
     log "Add $install_dir to your PATH if it is not already available in your shell."
   fi
 
-  printf '%s' "$target_path"
+  printf '%s\n' "$target_path"
 }
 
 main() {
@@ -61,7 +61,7 @@ main() {
   log "Using $($PYTHON_BIN --version 2>&1)"
 
   local installed_cli
-  installed_cli="$(install_cli)"
+  installed_cli="$(install_cli | tail -n 1)"
 
   log "Running initial setup..."
   "$installed_cli" --setup
