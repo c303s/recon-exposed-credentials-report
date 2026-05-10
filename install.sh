@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_RAW_BASE="https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main"
 SCRIPT_NAME="recon-exposed-credentials-report"
 SCRIPT_URL="$REPO_RAW_BASE/recon_exposed_credentials_report.py"
+PYTHON_BIN=""
 
 log() {
   printf '[install] %s\n' "$1"
@@ -14,9 +15,28 @@ ensure_homebrew() {
   return
 }
 
-ensure_python3() {
+supports_falconpy() {
+  local candidate="$1"
+  "$candidate" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)'
+}
+
+select_python3() {
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+    if ! command -v "$candidate" >/dev/null 2>&1; then
+      continue
+    fi
+    if supports_falconpy "$candidate"; then
+      PYTHON_BIN="$candidate"
+      return
+    fi
+  done
+
   if command -v python3 >/dev/null 2>&1; then
-    return
+    log "Installed Python version is not supported by FalconPy."
+    log "Install Python 3.10, 3.11, 3.12, or 3.13, then run this installer again."
+    log "Current Python: $(python3 --version 2>&1)"
+    exit 1
   fi
 
   log "Python 3 is required but was not found on this system."
@@ -25,12 +45,13 @@ ensure_python3() {
 }
 
 ensure_pip() {
-  python3 -m ensurepip --upgrade >/dev/null 2>&1 || true
+  "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
 }
 
 install_falconpy() {
   log "Installing FalconPy..."
-  python3 -m pip install --user --upgrade pip falconpy
+  "$PYTHON_BIN" -m pip install --user --upgrade pip
+  "$PYTHON_BIN" -m pip install --user falconpy
 }
 
 choose_install_dir() {
@@ -60,7 +81,8 @@ install_cli() {
 }
 
 main() {
-  ensure_python3
+  select_python3
+  log "Using $($PYTHON_BIN --version 2>&1)"
   ensure_pip
   install_falconpy
 
