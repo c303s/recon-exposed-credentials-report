@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import json
 import os
 import ssl
@@ -469,6 +470,19 @@ def prompt_non_empty_value(name: str) -> str:
         print(f"{name} cannot be empty.")
 
 
+def prompt_secret_value(name: str) -> str:
+    while True:
+        if sys.stdin.isatty() and sys.stderr.isatty():
+            value = getpass.getpass(f"Enter {name}: ").strip()
+            print("------------------------------------------------------------------------")
+        else:
+            value = prompt_user(f"Enter {name}: ").strip()
+
+        if value:
+            return value
+        print(f"{name} cannot be empty.")
+
+
 def prompt_value_with_default(name: str, default: str) -> str:
     while True:
         value = prompt_user(f"Enter {name} [{default}]: ").strip()
@@ -511,7 +525,7 @@ def prompt_falcon_credentials(dotenv_path: Path) -> None:
         if response in {"y", "yes", "update"}:
             new_values = {
                 "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
-                "FALCON_CLIENT_SECRET": prompt_non_empty_value("FALCON_CLIENT_SECRET"),
+                "FALCON_CLIENT_SECRET": prompt_secret_value("FALCON_CLIENT_SECRET"),
                 "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
             }
             write_dotenv_values(dotenv_path, new_values)
@@ -531,7 +545,7 @@ def run_initial_setup(dotenv_path: Path) -> None:
     print(f"Configuration file: {dotenv_path}")
     setup_values = {
         "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
-        "FALCON_CLIENT_SECRET": prompt_non_empty_value("FALCON_CLIENT_SECRET"),
+        "FALCON_CLIENT_SECRET": prompt_secret_value("FALCON_CLIENT_SECRET"),
         "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
     }
     write_dotenv_values(dotenv_path, setup_values)
