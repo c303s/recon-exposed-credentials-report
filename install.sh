@@ -6,6 +6,7 @@ REPO_RAW_BASE="https://raw.githubusercontent.com/c303s/recon-exposed-credentials
 SCRIPT_NAME="recon-exposed-credentials-report"
 SCRIPT_URL="$REPO_RAW_BASE/recon_exposed_credentials_report.py"
 PYTHON_BIN=""
+TEMP_SCRIPT_PATH=""
 
 log() {
   printf '[install] %s\n' "$1" >&2
@@ -40,13 +41,23 @@ choose_install_dir() {
   printf '%s' "$HOME/.local/bin"
 }
 
+download_cli() {
+  TEMP_SCRIPT_PATH="$(mktemp "$TMPDIR/${SCRIPT_NAME}.XXXXXX")"
+  log "Downloading $SCRIPT_NAME to $TEMP_SCRIPT_PATH..."
+  curl -fsSL "$SCRIPT_URL" -o "$TEMP_SCRIPT_PATH"
+  chmod +x "$TEMP_SCRIPT_PATH"
+
+  printf '%s\n' "$TEMP_SCRIPT_PATH"
+}
+
 install_cli() {
+  local source_path="$1"
   local install_dir
   install_dir="$(choose_install_dir)"
   local target_path="$install_dir/$SCRIPT_NAME"
 
   log "Installing $SCRIPT_NAME to $target_path..."
-  curl -fsSL "$SCRIPT_URL" -o "$target_path"
+  cp "$source_path" "$target_path"
   chmod +x "$target_path"
 
   if [[ ":$PATH:" != *":$install_dir:"* ]]; then
@@ -60,11 +71,14 @@ main() {
   select_python3
   log "Using $($PYTHON_BIN --version 2>&1)"
 
+  local downloaded_cli
+  downloaded_cli="$(download_cli | tail -n 1)"
+
   local installed_cli
-  installed_cli="$(install_cli | tail -n 1)"
+  installed_cli="$(install_cli "$downloaded_cli" | tail -n 1)"
 
   log "Running initial setup..."
-  "$installed_cli" --setup
+  "$PYTHON_BIN" "$installed_cli" --setup
 
   log "Installation complete. Run '$SCRIPT_NAME' to start the tool."
 }

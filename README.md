@@ -14,7 +14,7 @@ No separate Python package install is needed.
 
 ## Setup
 
-The installer runs setup automatically.
+The installer downloads the CLI locally, installs it, and then runs setup from the local file.
 
 It will ask for:
 
