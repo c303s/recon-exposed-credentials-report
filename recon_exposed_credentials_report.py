@@ -462,6 +462,12 @@ def write_dotenv_values(dotenv_path: Path, updates: dict[str, str]) -> None:
     dotenv_path.write_text(content, encoding="utf-8")
 
 
+def apply_falcon_values(values: dict[str, str]) -> None:
+    for key, value in values.items():
+        if key:
+            os.environ[key] = value
+
+
 def prompt_non_empty_value(name: str) -> str:
     while True:
         value = prompt_user(f"Enter {name}: ").strip()
@@ -501,7 +507,39 @@ def mask_secret(secret: str) -> str:
     return "*" * (len(secret) - 4) + secret[-4:]
 
 
-def prompt_falcon_credentials(dotenv_path: Path) -> None:
+def prompt_falcon_values() -> dict[str, str]:
+    return {
+        "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
+        "FALCON_CLIENT_SECRET": prompt_secret_value("FALCON_CLIENT_SECRET"),
+        "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
+    }
+
+
+def build_client_from_values(values: dict[str, str]) -> Any:
+    return ReconClient(
+        client_id=values["FALCON_CLIENT_ID"],
+        client_secret=values["FALCON_CLIENT_SECRET"],
+        base_url=values["FALCON_BASE_URL"],
+    )
+
+
+def prompt_for_valid_falcon_credentials(dotenv_path: Path) -> Any:
+    while True:
+        new_values = prompt_falcon_values()
+        try:
+            client = build_client_from_values(new_values)
+            verify_recon_access(client)
+        except (FalconAPIError, RuntimeError) as exc:
+            print("Current API client details are invalid. Please enter valid credentials.")
+            print(exc)
+            continue
+
+        write_dotenv_values(dotenv_path, new_values)
+        apply_falcon_values(new_values)
+        return client
+
+
+def prompt_falcon_credentials(dotenv_path: Path) -> Any:
     dotenv_values = read_dotenv_values(dotenv_path)
     current_values = {
         key: dotenv_values.get(key) or os.environ.get(key, "")
@@ -513,25 +551,23 @@ def prompt_falcon_credentials(dotenv_path: Path) -> None:
     print(f"FALCON_CLIENT_SECRET: {mask_secret(current_values['FALCON_CLIENT_SECRET'])}")
     print(f"FALCON_BASE_URL: {current_values['FALCON_BASE_URL']}")
 
+    try:
+        client = build_client_from_values(current_values)
+        verify_recon_access(client)
+    except (FalconAPIError, RuntimeError) as exc:
+        print("Current API client details are invalid. Please enter valid credentials.")
+        print(exc)
+        return prompt_for_valid_falcon_credentials(dotenv_path)
+
     while True:
         response = prompt_user(
             "Would you like to update these credentials? [y/N]: "
         ).strip().lower()
         if response in {"", "n", "no"}:
-            for key, value in current_values.items():
-                if value:
-                    os.environ[key] = value
-            return
+            apply_falcon_values(current_values)
+            return client
         if response in {"y", "yes", "update"}:
-            new_values = {
-                "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
-                "FALCON_CLIENT_SECRET": prompt_secret_value("FALCON_CLIENT_SECRET"),
-                "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
-            }
-            write_dotenv_values(dotenv_path, new_values)
-            for key, value in new_values.items():
-                os.environ[key] = value
-            return
+            return prompt_for_valid_falcon_credentials(dotenv_path)
         print("Invalid selection. Enter 'Y' to update these credentials or 'N' to keep them.")
 
 
@@ -540,18 +576,12 @@ def has_complete_falcon_configuration(dotenv_path: Path) -> bool:
     return all((dotenv_values.get(key) or os.environ.get(key, "")).strip() for key in FALCON_ENV_KEYS)
 
 
-def run_initial_setup(dotenv_path: Path) -> None:
+def run_initial_setup(dotenv_path: Path) -> Any:
     print("Initial setup")
     print(f"Configuration file: {dotenv_path}")
-    setup_values = {
-        "FALCON_CLIENT_ID": prompt_non_empty_value("FALCON_CLIENT_ID"),
-        "FALCON_CLIENT_SECRET": prompt_secret_value("FALCON_CLIENT_SECRET"),
-        "FALCON_BASE_URL": prompt_value_with_default("FALCON_BASE_URL", DEFAULT_FALCON_BASE_URL),
-    }
-    write_dotenv_values(dotenv_path, setup_values)
-    for key, value in setup_values.items():
-        os.environ[key] = value
+    client = prompt_for_valid_falcon_credentials(dotenv_path)
     print(f"Saved configuration to {dotenv_path}")
+    return client
 
 
 def require_env(name: str) -> str:
@@ -1291,13 +1321,11 @@ def main() -> int:
         clear_screen()
         print_logo()
         if args.setup or not has_complete_falcon_configuration(dotenv_path):
-            run_initial_setup(dotenv_path)
+            client = run_initial_setup(dotenv_path)
         else:
-            prompt_falcon_credentials(dotenv_path)
+            client = prompt_falcon_credentials(dotenv_path)
 
         try:
-            client = build_client()
-            verify_recon_access(client)
             rule_ids = query_rule_ids(client)
             rules = (
                 run_with_spinner(
