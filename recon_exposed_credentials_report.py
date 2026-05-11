@@ -347,14 +347,16 @@ def verify_recon_access(client: Any) -> None:
         print(f"\r\033[31m[status] {status_message} ERROR\033[0m")
         if is_recon_access_error(exc):
             raise RuntimeError(
-                    "API client details might be incorrect, or API client does not have Recon read access.\n"
+                    "Pre-flight check failed. Possible reasons are:\n"
+                    "- Invalid API client details. Please enter valid credentials.\n"
+                    "- API client does not have Recon read access.\n"
                     'Hint: "Support and resources" > "API clients and keys" > [API client] >\n'
                     '"Monitoring rules (Falcon Intelligence Recon)" > enable read scope\n'
-                    "Please fix this and come back later."
+                    "Please correct this and try again."
             ) from exc
         raise
     print(f"\r[status] {status_message} done")
-    print("[status] API client has access to CrowdStrike Recon... done")
+    print("\033[32m[status] API client has access to CrowdStrike Recon... done\033[0m")
 
 
 def query_rule_ids(client: Any) -> list[str]:
@@ -542,7 +544,7 @@ def prompt_for_valid_falcon_credentials(dotenv_path: Path) -> Any:
 def prompt_falcon_credentials(dotenv_path: Path) -> Any:
     dotenv_values = read_dotenv_values(dotenv_path)
     current_values = {
-        key: dotenv_values.get(key) or os.environ.get(key, "")
+        key: dotenv_values.get(key, "")
         for key in FALCON_ENV_KEYS
     }
 
@@ -555,7 +557,6 @@ def prompt_falcon_credentials(dotenv_path: Path) -> Any:
         client = build_client_from_values(current_values)
         verify_recon_access(client)
     except (FalconAPIError, RuntimeError) as exc:
-        print("Current API client details are invalid. Please enter valid credentials.")
         print(exc)
         return prompt_for_valid_falcon_credentials(dotenv_path)
 
@@ -573,7 +574,9 @@ def prompt_falcon_credentials(dotenv_path: Path) -> Any:
 
 def has_complete_falcon_configuration(dotenv_path: Path) -> bool:
     dotenv_values = read_dotenv_values(dotenv_path)
-    return all((dotenv_values.get(key) or os.environ.get(key, "")).strip() for key in FALCON_ENV_KEYS)
+    if not dotenv_path.exists():
+        return False
+    return all(dotenv_values.get(key, "").strip() for key in FALCON_ENV_KEYS)
 
 
 def run_initial_setup(dotenv_path: Path) -> Any:
@@ -1320,7 +1323,7 @@ def main() -> int:
     while True:
         clear_screen()
         print_logo()
-        if args.setup or not has_complete_falcon_configuration(dotenv_path):
+        if args.setup or not dotenv_path.exists() or not has_complete_falcon_configuration(dotenv_path):
             client = run_initial_setup(dotenv_path)
         else:
             client = prompt_falcon_credentials(dotenv_path)
