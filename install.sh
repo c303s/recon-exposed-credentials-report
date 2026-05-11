@@ -2,85 +2,139 @@
 
 set -euo pipefail
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main"
-SCRIPT_NAME="recon-exposed-credentials-report"
-SCRIPT_URL="$REPO_RAW_BASE/recon_exposed_credentials_report.py"
-PYTHON_BIN=""
-TEMP_SCRIPT_PATH=""
+APP_NAME="recon-exposed-credentials-report"
+SCRIPT_NAME="recon_exposed_credentials_report.py"
+REPO_SLUG="${RECON_REPORT_REPO:-c303s/recon-exposed-credentials-report}"
+REPO_BRANCH="${RECON_REPORT_BRANCH:-main}"
+INSTALL_DIR="${RECON_REPORT_INSTALL_DIR:-$(pwd -P)}"
+LAUNCHER_PATH="$INSTALL_DIR/$APP_NAME"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}.XXXXXX")"
 
-log() {
-  printf '[install] %s\n' "$1" >&2
+cleanup() {
+  rm -rf "$WORK_DIR"
 }
 
-ensure_homebrew() {
-  return
+trap cleanup EXIT
+
+need_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Error: '$1' is required to install $APP_NAME." >&2
+    exit 1
+  fi
 }
 
-select_python3() {
-  local candidate
-  for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
-    if ! command -v "$candidate" >/dev/null 2>&1; then
-      continue
+print_step() {
+  echo "==> $1"
+}
+
+download_source() {
+  if [[ -n "${RECON_REPORT_SOURCE_DIR:-}" ]]; then
+    SOURCE_DIR="$RECON_REPORT_SOURCE_DIR"
+    if [[ ! -f "$SOURCE_DIR/$SCRIPT_NAME" ]]; then
+      echo "Error: RECON_REPORT_SOURCE_DIR does not contain $SCRIPT_NAME." >&2
+      exit 1
     fi
-    PYTHON_BIN="$candidate"
     return
+  fi
+
+  need_command curl
+  need_command tar
+
+  local archive_path="$WORK_DIR/source.tar.gz"
+  local repo_url="https://github.com/$REPO_SLUG/archive/refs/heads/$REPO_BRANCH.tar.gz"
+
+  print_step "Downloading $APP_NAME from GitHub"
+  curl -fsSL "$repo_url" -o "$archive_path"
+  tar -xzf "$archive_path" -C "$WORK_DIR"
+
+  SOURCE_DIR="$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [[ -z "$SOURCE_DIR" || ! -f "$SOURCE_DIR/$SCRIPT_NAME" ]]; then
+    echo "Error: could not unpack the application files." >&2
+    exit 1
+  fi
+}
+
+install_requirements() {
+  local requirements_path="$INSTALL_DIR/requirements.txt"
+  if [[ ! -f "$requirements_path" ]]; then
+    return
+  fi
+
+  if ! grep -Eq '^[[:space:]]*[^#[:space:]]' "$requirements_path"; then
+    return
+  fi
+
+  print_step "Installing Python requirements"
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "Error: python3 is available, but pip is required to install dependencies." >&2
+    exit 1
+  fi
+
+  python3 -m pip install --user -r "$requirements_path"
+}
+
+create_launcher() {
+  cat > "$LAUNCHER_PATH" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$INSTALL_DIR"
+exec python3 "$INSTALL_DIR/$SCRIPT_NAME" "\$@"
+EOF
+  chmod 755 "$LAUNCHER_PATH"
+}
+
+install_files() {
+  local existing_env_backup="$WORK_DIR/.env"
+  local existing_env_bak_backup="$WORK_DIR/.env.bak"
+  local file_name
+
+  mkdir -p "$INSTALL_DIR"
+
+  if [[ -f "$INSTALL_DIR/.env" ]]; then
+    cp "$INSTALL_DIR/.env" "$existing_env_backup"
+  fi
+  if [[ -f "$INSTALL_DIR/.env.bak" ]]; then
+    cp "$INSTALL_DIR/.env.bak" "$existing_env_bak_backup"
+  fi
+
+  for file_name in "$SCRIPT_NAME" "README.md" "requirements.txt" "install.sh" ".gitignore"; do
+    if [[ -f "$SOURCE_DIR/$file_name" ]]; then
+      cp "$SOURCE_DIR/$file_name" "$INSTALL_DIR/$file_name"
+    fi
   done
 
-  log "Python 3 is required but was not found on this system."
-  log "Install Python 3 first, then run this installer again."
-  exit 1
+  chmod 755 "$INSTALL_DIR/$SCRIPT_NAME"
+  if [[ -f "$INSTALL_DIR/install.sh" ]]; then
+    chmod 755 "$INSTALL_DIR/install.sh"
+  fi
+
+  if [[ -f "$existing_env_backup" ]]; then
+    cp "$existing_env_backup" "$INSTALL_DIR/.env"
+  fi
+  if [[ -f "$existing_env_bak_backup" ]]; then
+    cp "$existing_env_bak_backup" "$INSTALL_DIR/.env.bak"
+  fi
+
+  create_launcher
 }
 
-choose_install_dir() {
-  if [[ -w /usr/local/bin ]]; then
-    printf '/usr/local/bin'
+launch_application() {
+  if [[ "${RECON_REPORT_SKIP_LAUNCH:-0}" == "1" ]]; then
+    print_step "Installation complete"
+    echo "Run './$APP_NAME' from $INSTALL_DIR to start Recon Report."
     return
   fi
 
-  mkdir -p "$HOME/.local/bin"
-  printf '%s' "$HOME/.local/bin"
-}
-
-download_cli() {
-  TEMP_SCRIPT_PATH="$(mktemp "$TMPDIR/${SCRIPT_NAME}.XXXXXX")"
-  log "Downloading $SCRIPT_NAME to $TEMP_SCRIPT_PATH..."
-  curl -fsSL "$SCRIPT_URL" -o "$TEMP_SCRIPT_PATH"
-  chmod +x "$TEMP_SCRIPT_PATH"
-
-  printf '%s\n' "$TEMP_SCRIPT_PATH"
-}
-
-install_cli() {
-  local source_path="$1"
-  local install_dir
-  install_dir="$(choose_install_dir)"
-  local target_path="$install_dir/$SCRIPT_NAME"
-
-  log "Installing $SCRIPT_NAME to $target_path..."
-  cp "$source_path" "$target_path"
-  chmod +x "$target_path"
-
-  if [[ ":$PATH:" != *":$install_dir:"* ]]; then
-    log "Add $install_dir to your PATH if it is not already available in your shell."
-  fi
-
-  printf '%s\n' "$target_path"
+  print_step "Starting Recon Report"
+  exec "$LAUNCHER_PATH"
 }
 
 main() {
-  select_python3
-  log "Using $($PYTHON_BIN --version 2>&1)"
-
-  local downloaded_cli
-  downloaded_cli="$(download_cli | tail -n 1)"
-
-  local installed_cli
-  installed_cli="$(install_cli "$downloaded_cli" | tail -n 1)"
-
-  log "Running initial setup..."
-  "$PYTHON_BIN" "$installed_cli" --setup
-
-  log "Installation complete. Run '$SCRIPT_NAME' to start the tool."
+  need_command python3
+  download_source
+  install_files
+  install_requirements
+  launch_application
 }
 
 main "$@"

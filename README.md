@@ -4,17 +4,28 @@ Query CrowdStrike Falcon Intelligence Recon for exposed usernames and passwords 
 
 ## Install
 
-Prerequisite: Python 3 must already be installed.
+Prerequisites: `bash`, `curl`, and `python3` must already be installed.
 
-No separate Python package install is needed.
+Run the install command from the directory where you want the project files to live. It downloads the project from GitHub into the current working directory, creates a local launcher there, and starts the main script. The Python script's own setup routine still handles credential onboarding.
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main/install.sh)"
 ```
 
+The installer places these files in the current working directory:
+
+```text
+./install.sh
+./.gitignore
+./recon_exposed_credentials_report.py
+./requirements.txt
+./README.md
+./recon-exposed-credentials-report
+```
+
 ## Setup
 
-The installer downloads the CLI locally, installs it, and then runs setup from the local file.
+On first launch, the script runs its built-in setup routine automatically.
 
 It will ask for:
 
@@ -31,7 +42,7 @@ https://api.eu-1.crowdstrike.com
 If you want to run setup again later:
 
 ```bash
-recon-exposed-credentials-report --setup
+./recon-exposed-credentials-report --setup
 ```
 
 The tool asks for:
@@ -55,5 +66,5 @@ Credentials are stored in:
 ## Run
 
 ```bash
-recon-exposed-credentials-report
+./recon-exposed-credentials-report
 ```
