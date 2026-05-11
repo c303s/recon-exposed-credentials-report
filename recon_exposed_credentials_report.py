@@ -429,9 +429,9 @@ def read_dotenv_values(dotenv_path: Path) -> dict[str, str]:
 
 
 def load_dotenv(dotenv_path: Path) -> None:
-    """Populate missing environment variables from a .env file."""
+    """Load environment variables from a .env file on each startup."""
     for key, value in read_dotenv_values(dotenv_path).items():
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
