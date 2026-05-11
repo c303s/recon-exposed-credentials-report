@@ -39,6 +39,7 @@ FALCON_ENV_KEYS = (
     "FALCON_CLIENT_SECRET",
     "FALCON_BASE_URL",
 )
+IDENTITY_FILTER_ENV_KEY = "RECON_EMAIL_FILTER"
 DEFAULT_FALCON_BASE_URL = "https://api.eu-1.crowdstrike.com"
 APP_VERSION = "0.01a"
 CONFIG_DIR_NAME = "recon-exposed-credentials-report"
@@ -305,8 +306,8 @@ def print_logo() -> None:
                                            /_/
     """
     print(logo)
-    print(f"Version {APP_VERSION} | {datetime.now().strftime('%d.%m.%Y')}")
     print("Query CrowdStrike Recon for exposed credential findings by monitoring rule.")
+    print(f"Version {APP_VERSION} | {datetime.now().strftime('%d.%m.%Y')} | This is not an official CrowdStrike tool.")
     print()
 
 
@@ -419,7 +420,7 @@ def load_dotenv(dotenv_path: Path) -> None:
             os.environ[key] = value
 
 
-def write_dotenv_values(dotenv_path: Path, updates: dict[str, str]) -> None:
+def write_dotenv_values(dotenv_path: Path, updates: dict[str, str | None]) -> None:
     dotenv_path.parent.mkdir(parents=True, exist_ok=True)
     lines = dotenv_path.read_text(encoding="utf-8").splitlines() if dotenv_path.exists() else []
     updated_keys: set[str] = set()
@@ -431,14 +432,16 @@ def write_dotenv_values(dotenv_path: Path, updates: dict[str, str]) -> None:
             key, _ = line.split("=", 1)
             key = key.strip()
             if key in updates:
-                output_lines.append(f"{key}={updates[key]}")
+                value = updates[key]
                 updated_keys.add(key)
+                if value:
+                    output_lines.append(f"{key}={value}")
                 continue
         output_lines.append(line)
 
-    for key in FALCON_ENV_KEYS:
-        if key in updates and key not in updated_keys:
-            output_lines.append(f"{key}={updates[key]}")
+    for key, value in updates.items():
+        if key not in updated_keys and value:
+            output_lines.append(f"{key}={value}")
 
     content = "\n".join(output_lines)
     if output_lines:
@@ -450,6 +453,13 @@ def apply_falcon_values(values: dict[str, str]) -> None:
     for key, value in values.items():
         if key:
             os.environ[key] = value
+
+
+def apply_optional_env_value(name: str, value: str) -> None:
+    if value:
+        os.environ[name] = value
+        return
+    os.environ.pop(name, None)
 
 
 def prompt_non_empty_value(name: str) -> str:
@@ -481,6 +491,50 @@ def prompt_value_with_default(name: str, default: str) -> str:
         if default:
             return default
         print(f"{name} cannot be empty.")
+
+
+def prompt_identity_filter(dotenv_path: Path) -> str:
+    saved_filter = read_dotenv_values(dotenv_path).get(IDENTITY_FILTER_ENV_KEY, "").strip()
+
+    print("------------------------------------------------------------------------")
+    print("Optional email/domain filter")
+    if saved_filter:
+        print(f"Saved filter: {saved_filter}")
+
+    while True:
+        if saved_filter:
+            response = prompt_user(
+                "Would you like to update the file or delete it? [y/N/d]: "
+            ).strip()
+            lowered = response.lower()
+            if lowered in {"", "n", "no", "keep"}:
+                selected_filter = saved_filter
+            elif lowered in {"d", "delete"}:
+                write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: None})
+                apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
+                print("Saved filter deleted.")
+                return ""
+            elif lowered in {"u", "update", "y", "yes"}:
+                selected_filter = prompt_user("Enter an email address or domain filter: ").strip()
+                if not selected_filter:
+                    print("Filter value cannot be empty.")
+                    continue
+            else:
+                print("Invalid selection. Enter U to update, N to keep the current filter, or D to delete it.")
+                continue
+        else:
+            response = prompt_user(
+                "Filter findings for a specific email address or domain? "
+                "Enter a value or press Enter to skip: "
+            ).strip()
+            if not response:
+                apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
+                return ""
+            selected_filter = response
+
+        write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: selected_filter})
+        apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, selected_filter)
+        return selected_filter
 
 
 def mask_secret(secret: str) -> str:
@@ -938,6 +992,7 @@ def fetch_findings_batch(
     exposed_rule_filter: str,
     skip_results: int,
     max_results: int | None,
+    identity_filter: str,
 ) -> tuple[list[Finding], int]:
     exposed_record_ids = run_with_spinner(
         "Querying exposed data records... (this may take a little while)",
@@ -971,6 +1026,7 @@ def fetch_findings_batch(
         rules,
         selected_rule,
         records,
+        identity_filter,
     )
     return findings, len(exposed_record_ids)
 
@@ -1159,10 +1215,23 @@ def build_rule_lookup(rules: Iterable[dict[str, Any]]) -> dict[str, dict[str, st
     return lookup
 
 
+def finding_matches_identity_filter(username: str, identity_filter: str) -> bool:
+    candidate = username.strip().lower()
+    normalized_filter = identity_filter.strip().lower()
+    if not normalized_filter:
+        return True
+    if "@" in normalized_filter and not normalized_filter.startswith("@"):
+        return candidate == normalized_filter
+
+    domain = normalized_filter[1:] if normalized_filter.startswith("@") else normalized_filter
+    return candidate == domain or candidate.endswith(f"@{domain}")
+
+
 def build_findings(
     rules: list[dict[str, Any]],
     selected_rule: SelectedRule,
     records: list[dict[str, Any]],
+    identity_filter: str = "",
 ) -> list[Finding]:
     findings: list[Finding] = []
     rules_by_id = build_rule_lookup(rules)
@@ -1195,6 +1264,8 @@ def build_findings(
         )
 
         for username, password in credential_pairs:
+            if identity_filter and not finding_matches_identity_filter(username, identity_filter):
+                continue
             findings.append(
                 Finding(
                     rule_name=rule_name,
@@ -1322,6 +1393,7 @@ def main() -> int:
             rule_choices = run_with_spinner(
                 "Getting notification counts for monitoring rules...", build_rule_choices, rules, client
             )
+            identity_filter = prompt_identity_filter(dotenv_path)
             selected_rule = prompt_rule_selection(rule_choices)
 
             selected_days = args.days if args.days is not None else prompt_day_selection()
@@ -1334,6 +1406,9 @@ def main() -> int:
 
             if selected_rule:
                 print(f"Selected monitoring rule: {selected_rule.rule_name}", file=sys.stderr)
+
+            if identity_filter:
+                print(f"Applying email/domain filter: {identity_filter}", file=sys.stderr)
 
             if date_window:
                 print(
@@ -1365,6 +1440,7 @@ def main() -> int:
             exposed_rule_filter,
             skip_results=shown_records,
             max_results=batch_limit,
+            identity_filter=identity_filter,
         )
 
         if fetched_record_count == 0:
@@ -1393,6 +1469,7 @@ def main() -> int:
                 exposed_rule_filter,
                 skip_results=shown_records,
                 max_results=None,
+                identity_filter=identity_filter,
             )
             if fetched_record_count == 0:
                 print("No more exposed data records were found.")
@@ -1406,7 +1483,7 @@ def main() -> int:
         file_path = write_csv_report(Path.cwd(), all_findings, selected_rule)
         print(f"CSV written to: {file_path}")
 
-    print("Thanks for using Recon Password Report.")
+    print("Thanks for using Recon Report.")
 
     return 0
 
