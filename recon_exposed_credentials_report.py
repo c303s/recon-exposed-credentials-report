@@ -310,26 +310,8 @@ def print_logo() -> None:
     print()
 
 
-def config_dir() -> Path:
-    base_dir = os.environ.get("XDG_CONFIG_HOME")
-    if base_dir:
-        return Path(base_dir).expanduser() / CONFIG_DIR_NAME
-    return Path.home() / ".config" / CONFIG_DIR_NAME
-
-
-def default_dotenv_path() -> Path:
-    return config_dir() / ".env"
-
-
-def resolve_dotenv_path(script_dir: Path) -> Path:
-    config_dotenv_path = default_dotenv_path()
-    legacy_dotenv_path = script_dir / ".env"
-
-    if config_dotenv_path.exists():
-        return config_dotenv_path
-    if legacy_dotenv_path.exists():
-        return legacy_dotenv_path
-    return config_dotenv_path
+def resolve_dotenv_path() -> Path:
+    return Path.cwd() / ".env"
 
 
 def is_recon_access_error(exc: FalconAPIError) -> bool:
@@ -1315,8 +1297,7 @@ def print_report(findings: list[Finding]) -> None:
 
 
 def main() -> int:
-    script_dir = Path(__file__).resolve().parent
-    dotenv_path = resolve_dotenv_path(script_dir)
+    dotenv_path = resolve_dotenv_path()
     load_dotenv(dotenv_path)
     args = parse_args()
 

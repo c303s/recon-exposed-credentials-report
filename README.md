@@ -49,7 +49,7 @@ https://api.eu-1.crowdstrike.com
 Credentials are stored in:
 
 ```text
-~/.config/recon-exposed-credentials-report/.env
+./.env
 ```
 
 ## Run
