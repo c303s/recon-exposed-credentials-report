@@ -13,6 +13,7 @@ to notification queries by default. Override it with command-line arguments if n
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import getpass
 import json
@@ -32,7 +33,7 @@ PAGE_SIZE = 500
 BATCH_SIZE = 100
 MAX_QUERY_WINDOW = 10_000
 EXPOSED_RECORD_BATCH_SIZE = 100
-DAY_OPTIONS = (1, 3, 7, 15, 30)
+DAY_OPTIONS = (1, 3, 7, 15, 30, 60, 90)
 MIN_SEGMENT_WINDOW = timedelta(minutes=1)
 FALCON_ENV_KEYS = (
     "FALCON_CLIENT_ID",
@@ -41,7 +42,7 @@ FALCON_ENV_KEYS = (
 )
 IDENTITY_FILTER_ENV_KEY = "RECON_EMAIL_FILTER"
 DEFAULT_FALCON_BASE_URL = "https://api.eu-1.crowdstrike.com"
-APP_VERSION = "0.01a"
+APP_VERSION = "0.02a"
 CONFIG_DIR_NAME = "recon-exposed-credentials-report"
 
 PASSWORD_KEYWORDS = {
@@ -106,6 +107,8 @@ class RuleChoice:
     rule_id: str
     rule_name: str
     notification_count: str
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class FalconAPIError(RuntimeError):
@@ -120,6 +123,7 @@ class ReconClient:
         self.access_token = ""
         self.token_expires_at = 0.0
         self.ssl_context = self._build_ssl_context()
+        self._token_lock = threading.Lock()
 
     def query_rules(self, **params: Any) -> dict[str, Any]:
         return self._get("/recon/queries/rules/v1", params)
@@ -141,34 +145,35 @@ class ReconClient:
         return self._request("GET", path, params=params, retry_on_unauthorized=True)
 
     def _ensure_token(self) -> None:
-        if self.access_token and time.time() < self.token_expires_at - 60:
-            return
+        with self._token_lock:
+            if self.access_token and time.time() < self.token_expires_at - 60:
+                return
 
-        token_url = f"{self.base_url}/oauth2/token"
-        body = parse.urlencode(
-            {
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
+            token_url = f"{self.base_url}/oauth2/token"
+            body = parse.urlencode(
+                {
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                }
+            ).encode("utf-8")
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
             }
-        ).encode("utf-8")
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        response = self._send_request("POST", token_url, headers=headers, body=body)
-        status_code = int(response.get("status_code", 0) or 0)
-        response_body = response.get("body", {})
-        if status_code >= 400:
-            raise FalconAPIError(
-                f"oauth2/token failed with status {status_code or 'unknown'}: {self._format_error_details(response_body)}"
-            )
+            response = self._send_request("POST", token_url, headers=headers, body=body)
+            status_code = int(response.get("status_code", 0) or 0)
+            response_body = response.get("body", {})
+            if status_code >= 400:
+                raise FalconAPIError(
+                    f"oauth2/token failed with status {status_code or 'unknown'}: {self._format_error_details(response_body)}"
+                )
 
-        if not isinstance(response_body, dict) or not response_body.get("access_token"):
-            raise FalconAPIError("oauth2/token did not return an access token.")
+            if not isinstance(response_body, dict) or not response_body.get("access_token"):
+                raise FalconAPIError("oauth2/token did not return an access token.")
 
-        self.access_token = str(response_body["access_token"])
-        expires_in = int(response_body.get("expires_in", 1800) or 1800)
-        self.token_expires_at = time.time() + max(expires_in, 60)
+            self.access_token = str(response_body["access_token"])
+            expires_in = int(response_body.get("expires_in", 1800) or 1800)
+            self.token_expires_at = time.time() + max(expires_in, 60)
 
     def _request(
         self,
@@ -307,7 +312,7 @@ def print_logo() -> None:
     """
     print(logo)
     print("Query CrowdStrike Recon for exposed credential findings by monitoring rule.")
-    print(f"Version {APP_VERSION} | {datetime.now().strftime('%d.%m.%Y')} | This is not an official CrowdStrike tool.")
+    print(f"Version {APP_VERSION} | built on {datetime.now().strftime('%d.%m.%Y')} | This is not an official CrowdStrike tool.")
     print()
 
 
@@ -447,6 +452,10 @@ def write_dotenv_values(dotenv_path: Path, updates: dict[str, str | None]) -> No
     if output_lines:
         content += "\n"
     dotenv_path.write_text(content, encoding="utf-8")
+    try:
+        dotenv_path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def apply_falcon_values(values: dict[str, str]) -> None:
@@ -504,7 +513,7 @@ def prompt_identity_filter(dotenv_path: Path) -> str:
     while True:
         if saved_filter:
             response = prompt_user(
-                "Would you like to update the file or delete it? [y/N/d]: "
+                "Press Enter to keep the saved filter, type D to delete it, or enter a new email/domain filter: "
             ).strip()
             lowered = response.lower()
             if lowered in {"", "n", "no", "keep"}:
@@ -512,28 +521,22 @@ def prompt_identity_filter(dotenv_path: Path) -> str:
             elif lowered in {"d", "delete"}:
                 write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: None})
                 apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
-                print("Saved filter deleted.")
+                print("Saved filter deleted. No email/domain filter will be applied.")
                 return ""
-            elif lowered in {"u", "update", "y", "yes"}:
-                selected_filter = prompt_user("Enter an email address or domain filter: ").strip()
-                if not selected_filter:
-                    print("Filter value cannot be empty.")
-                    continue
             else:
-                print("Invalid selection. Enter U to update, N to keep the current filter, or D to delete it.")
-                continue
+                selected_filter = response
         else:
-            response = prompt_user(
-                "Filter findings for a specific email address or domain? "
-                "Enter a value or press Enter to skip: "
-            ).strip()
+            print("Would you like to filter findings for a specific email address or domain?")
+            response = prompt_user("Enter a value or press Enter to skip: ").strip()
             if not response:
                 apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
+                print("No email/domain filter will be applied.")
                 return ""
             selected_filter = response
 
         write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: selected_filter})
         apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, selected_filter)
+        print(f"Using email filter: {selected_filter}")
         return selected_filter
 
 
@@ -735,6 +738,66 @@ def count_notifications_for_rule(client: Any, rule_id: str) -> str:
     return str(len(ids))
 
 
+def count_pairs_in_records(client: Any, ids: list[str], identity_filter: str = "") -> int:
+    """Fetch record entities and count unique extractable (username, password) pairs."""
+    if not ids:
+        return 0
+    records = fetch_entities(
+        client.get_notifications_exposed_data_records, ids, "GetNotificationsExposedDataRecordsV1"
+    )
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        pairs = extract_credential_pairs(record)
+        if not pairs:
+            usernames = dedupe_preserve_order(collect_field_values(record, username_matcher))
+            passwords = dedupe_preserve_order(collect_field_values(record, password_matcher))
+            if len(usernames) == 1 and len(passwords) == 1:
+                pairs = [(usernames[0], passwords[0])]
+        for username, password in pairs:
+            if identity_filter and not finding_matches_identity_filter(username, identity_filter):
+                continue
+            seen.add((username, password))
+    return len(seen)
+
+
+def count_exposed_records_for_rule(client: Any, rule_id: str) -> str:
+    ids, truncated = paginate_query_segment(
+        client.query_notifications_exposed_data_records,
+        "QueryNotificationsExposedDataRecordsV1",
+        filter=build_rule_filter("rule.id", rule_id),
+    )
+    if truncated:
+        return f"{MAX_QUERY_WINDOW}+"
+
+    return str(count_pairs_in_records(client, ids))
+
+
+def count_exposed_records_in_window(client: Any, rule_id: str, date_window: DateWindow, identity_filter: str = "") -> str:
+    ids = paginate_segmented_by_date(
+        client.query_notifications_exposed_data_records,
+        "QueryNotificationsExposedDataRecordsV1",
+        "created_date",
+        date_window,
+        base_filter=build_rule_filter("rule.id", rule_id),
+        max_results=MAX_QUERY_WINDOW,
+    )
+    count = count_pairs_in_records(client, ids, identity_filter)
+    if len(ids) >= MAX_QUERY_WINDOW:
+        return f"{count}+"
+    return str(count)
+
+
+def fetch_day_option_counts(client: Any, rule_id: str, identity_filter: str = "") -> dict[int, str]:
+    def fetch_one(days: int) -> tuple[int, str]:
+        window = build_date_window(days)
+        return days, count_exposed_records_in_window(client, rule_id, window, identity_filter)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(DAY_OPTIONS)) as executor:
+        pairs = list(executor.map(fetch_one, DAY_OPTIONS))
+
+    return dict(pairs)
+
+
 def build_rule_choices(rules: list[dict[str, Any]], client: Any) -> list[RuleChoice]:
     choices: list[RuleChoice] = []
     for rule in sorted(rules, key=lambda item: entity_rule_name(item).lower()):
@@ -742,11 +805,27 @@ def build_rule_choices(rules: list[dict[str, Any]], client: Any) -> list[RuleCho
         rule_name = entity_rule_name(rule)
         if not rule_id or not rule_name:
             continue
+        topic = entity_rule_topic(rule)
+        if "typosquatting" in topic.lower():
+            continue
+        exposed_count = count_exposed_records_for_rule(client, rule_id)
+        if exposed_count == "0":
+            continue
+        created_at = format_rule_date(entity_rule_timestamp(
+            rule, "created_timestamp", "createdTimestamp", "created_at", "createdAt"
+        ))
+        updated_at = format_rule_date(entity_rule_timestamp(
+            rule, "updated_timestamp", "last_updated_timestamp", "lastUpdatedTimestamp",
+            "updatedTimestamp", "updated_at", "updatedAt", "last_modified_timestamp",
+            "lastModifiedTimestamp", "modified_timestamp", "modifiedTimestamp",
+        ))
         choices.append(
             RuleChoice(
                 rule_id=rule_id,
                 rule_name=rule_name,
-                notification_count=count_notifications_for_rule(client, rule_id),
+                notification_count=exposed_count,
+                created_at=created_at,
+                updated_at=updated_at,
             )
         )
     return choices
@@ -782,6 +861,11 @@ def parse_args() -> argparse.Namespace:
         description="Report CrowdStrike Recon exposed passwords grouped by monitoring rule."
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {APP_VERSION}",
+    )
+    parser.add_argument(
         "--days",
         type=int,
         choices=DAY_OPTIONS,
@@ -795,16 +879,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def prompt_day_selection() -> int:
+def prompt_day_selection(day_counts: dict[int, str] | None = None) -> int:
     print("Select a date filter:")
     for index, option in enumerate(DAY_OPTIONS, start=1):
         suffix = "day" if option == 1 else "days"
-        print(f"{index}. Last {option} {suffix}")
+        count_str = f" ({day_counts[option]})" if day_counts and option in day_counts else ""
+        print(f"{index}. Last {option} {suffix}{count_str}")
     print("q. Quit")
     print("s. Start over")
 
     while True:
-        selection = prompt_user("Choose 1, 2, 3, 4, or 5 [default 1]: ").strip()
+        selection = prompt_user("Choose 1–7 [default 1]: ").strip()
         if not selection:
             return DAY_OPTIONS[0]
         lowered = selection.lower()
@@ -814,7 +899,7 @@ def prompt_day_selection() -> int:
             raise RestartRequested()
         if selection in {str(index) for index in range(1, len(DAY_OPTIONS) + 1)}:
             return DAY_OPTIONS[int(selection) - 1]
-        print("Invalid selection. Choose 1, 2, 3, 4, or 5, or enter Q to quit or S to start over.")
+        print("Invalid selection. Choose 1–7, or enter Q to quit or S to start over.")
 
 
 def prompt_rule_selection(rule_choices: list[RuleChoice]) -> SelectedRule:
@@ -825,20 +910,24 @@ def prompt_rule_selection(rule_choices: list[RuleChoice]) -> SelectedRule:
         )
 
     selectable_rule_choices = [
-        rule for rule in rule_choices if rule.notification_count.endswith("+") or int(rule.notification_count) > 1
+        rule for rule in rule_choices if rule.notification_count.endswith("+") or int(rule.notification_count) > 0
     ]
     if not selectable_rule_choices:
         raise RuntimeError(
-            "Monitoring rules were found, but none have more than one notification to report. "
-            "Generate more notifications first, then run the tool again."
+            "Monitoring rules were found, but none have exposed credential records to report. "
+            "Wait for new exposed data records to appear, then run the tool again."
         )
 
     print("------------------------------------------------------------------------")
-    print("Found monitoring rules:")
-    for index, rule in enumerate(rule_choices, start=1):
-        selectable = rule.notification_count.endswith("+") or int(rule.notification_count) > 1
-        suffix = "" if selectable else " [not selectable]"
-        print(f"{index}. {rule.rule_name} ({rule.notification_count}){suffix}")
+    print("Found monitoring rules with exposed credentials:")
+    print("[note] Only listing exposed credentials after rule creation date.")
+    for index, rule in enumerate(selectable_rule_choices, start=1):
+        dates = ""
+        if rule.created_at:
+            dates = f"  created {rule.created_at}"
+        if rule.updated_at:
+            dates += f", last changed {rule.updated_at}"
+        print(f"{index}. {rule.rule_name} ({rule.notification_count}){dates}")
     print("q. Quit")
     print("s. Start over")
 
@@ -851,15 +940,11 @@ def prompt_rule_selection(rule_choices: list[RuleChoice]) -> SelectedRule:
             raise RestartRequested()
         if selection.isdigit():
             selected_index = int(selection)
-            if 1 <= selected_index <= len(rule_choices):
-                selected_rule = rule_choices[selected_index - 1]
-                selectable = selected_rule.notification_count.endswith("+") or int(selected_rule.notification_count) > 1
-                if not selectable:
-                    print("That monitoring rule is not selectable because it has fewer than two notifications.")
-                    continue
+            if 1 <= selected_index <= len(selectable_rule_choices):
+                selected_rule = selectable_rule_choices[selected_index - 1]
                 return SelectedRule(rule_id=selected_rule.rule_id, rule_name=selected_rule.rule_name)
         print(
-            f"Invalid selection. Choose a number from 1 to {len(rule_choices)}, "
+            f"Invalid selection. Choose a number from 1 to {len(selectable_rule_choices)}, "
             "or enter Q to quit or S to start over."
         )
 
@@ -1005,23 +1090,14 @@ def fetch_findings_batch(
         skip_results=skip_results,
         max_results=max_results,
     )
-    print_status(f"Loaded {len(exposed_record_ids)} exposed data record IDs.")
-
-    records = (
-        run_with_spinner(
-            "Getting exposed data record details...",
-            fetch_entities,
-            client.get_notifications_exposed_data_records,
-            exposed_record_ids,
-            "GetNotificationsExposedDataRecordsV1",
-        )
-        if exposed_record_ids
-        else []
+    records = fetch_entities(
+        client.get_notifications_exposed_data_records,
+        exposed_record_ids,
+        "GetNotificationsExposedDataRecordsV1",
     )
-    print_status(f"Loaded {len(records)} exposed data records.")
 
     findings = run_with_spinner(
-        "Building report output... this may take a while",
+        "Building report output... (this may take a while)",
         build_findings,
         rules,
         selected_rule,
@@ -1172,6 +1248,21 @@ def record_notification_id(record: dict[str, Any]) -> str:
     )
 
 
+def entity_rule_timestamp(entity: dict[str, Any], *keys: str) -> str:
+    return first_non_empty(*(entity.get(k) for k in keys))
+
+
+def format_rule_date(timestamp: str) -> str:
+    """Parse an ISO-8601 timestamp string and return DD.MM.YYYY, or empty string on failure."""
+    if not timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        return dt.astimezone(UTC).strftime("%d.%m.%Y")
+    except ValueError:
+        return ""
+
+
 def entity_rule_id(entity: dict[str, Any]) -> str:
     return first_non_empty(
         entity.get("rule_id"),
@@ -1286,16 +1377,19 @@ def format_finding_line(finding: Finding) -> str:
 
 
 def aggregate_finding_rows(findings: list[Finding]) -> list[tuple[str, str, str, str]]:
-    aggregated: set[tuple[str, str, str, str]] = set()
+    seen: dict[tuple[str, str, str], str] = {}
     for finding in findings:
         usernames = finding.usernames or ["Unknown username"]
         passwords = dedupe_preserve_order(finding.passwords or ["Unknown password"])
         for username in usernames:
             for password in passwords:
-                aggregated.add((finding.rule_name, finding.notification_id, username, password))
+                key = (finding.rule_name, username, password)
+                if key not in seen:
+                    seen[key] = finding.notification_id
 
-    rows = list(aggregated)
-    rows.sort(key=lambda item: (item[0].lower(), item[1].lower(), item[2].lower(), item[3].lower()))
+    rows = [(rule_name, notification_id, username, password)
+            for (rule_name, username, password), notification_id in seen.items()]
+    rows.sort(key=lambda item: (item[0].lower(), item[2].lower(), item[3].lower()))
     return rows
 
 
@@ -1337,22 +1431,30 @@ def csv_filename(rule_name: str, created_at: datetime) -> str:
     return f'{safe_rule_name}-{eu_date}.csv'
 
 
+def sanitize_csv_cell(value: str) -> str:
+    """Prevent CSV formula injection by prefixing risky leading characters with a single quote."""
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def write_csv_report(output_dir: Path, findings: list[Finding], selected_rule: SelectedRule | None) -> Path:
     export_rule_name = selected_rule.rule_name if selected_rule else "All monitoring rules"
     file_path = output_dir / csv_filename(export_rule_name, datetime.now(UTC))
     rows = build_csv_rows(findings)
+    safe_rows = [{key: sanitize_csv_cell(value) for key, value in row.items()} for row in rows]
 
     with file_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["monitoring_rule", "notification_id", "username", "password"])
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(safe_rows)
 
     return file_path
 
 
 def print_report(findings: list[Finding]) -> None:
     if not findings:
-        print("No exposed passwords were found in the retrieved Recon notifications.")
+        print("No extractable credential pairs were found in the loaded records.")
         return
 
     ordered_rows = aggregate_finding_rows(findings)
@@ -1369,10 +1471,10 @@ def print_report(findings: list[Finding]) -> None:
 
 def main() -> int:
     dotenv_path = resolve_dotenv_path()
-    load_dotenv(dotenv_path)
     args = parse_args()
 
     while True:
+        load_dotenv(dotenv_path)
         clear_screen()
         print_logo()
         if args.setup or not dotenv_path.exists() or not has_complete_falcon_configuration(dotenv_path):
@@ -1389,26 +1491,36 @@ def main() -> int:
                 if rule_ids
                 else []
             )
-            print_status(f"Loaded {len(rules)} monitoring rules... done")
             rule_choices = run_with_spinner(
-                "Getting notification counts for monitoring rules...", build_rule_choices, rules, client
+                "Verifying exposed credentials for monitoring rules...", build_rule_choices, rules, client
             )
+            print_status(f"Loaded {len(rules)} monitoring rules... {len(rule_choices)} include exposed credentials done")
             identity_filter = prompt_identity_filter(dotenv_path)
             selected_rule = prompt_rule_selection(rule_choices)
 
-            selected_days = args.days if args.days is not None else prompt_day_selection()
+            if args.days is not None:
+                selected_days = args.days
+            else:
+                rule_id_for_counts = selected_rule.rule_id if selected_rule else ""
+                day_counts: dict[int, str] | None = None
+                if rule_id_for_counts:
+                    day_counts = run_with_spinner(
+                        "Counting exposed credentials per date range...",
+                        fetch_day_option_counts,
+                        client,
+                        rule_id_for_counts,
+                        identity_filter,
+                    )
+                selected_days = prompt_day_selection(day_counts)
             date_window = build_date_window(selected_days)
 
-            notification_rule_filter = build_rule_filter("rule_id", selected_rule.rule_id) if selected_rule else ""
             exposed_rule_filter = build_rule_filter("rule.id", selected_rule.rule_id) if selected_rule else ""
-            notification_filter = join_filters(notification_rule_filter, build_date_filter("created_date", date_window))
-            exposed_filter = join_filters(exposed_rule_filter, build_date_filter("created_date", date_window))
 
             if selected_rule:
                 print(f"Selected monitoring rule: {selected_rule.rule_name}", file=sys.stderr)
 
             if identity_filter:
-                print(f"Applying email/domain filter: {identity_filter}", file=sys.stderr)
+                print(f"Applying email filter: {identity_filter}", file=sys.stderr)
 
             if date_window:
                 print(
@@ -1421,8 +1533,7 @@ def main() -> int:
             print("Starting over...", file=sys.stderr)
             continue
         except QuitRequested:
-            print("Exiting Recon Password Report.")
-            return 0
+            return 2
         except (FalconAPIError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1431,7 +1542,7 @@ def main() -> int:
     shown_records = 0
 
     while True:
-        batch_limit = EXPOSED_RECORD_BATCH_SIZE if shown_records == 0 else EXPOSED_RECORD_BATCH_SIZE
+        batch_limit = None if identity_filter else EXPOSED_RECORD_BATCH_SIZE
         findings, fetched_record_count = fetch_findings_batch(
             client,
             rules,
@@ -1453,6 +1564,9 @@ def main() -> int:
         shown_records += fetched_record_count
         all_findings.extend(findings)
         print_report(findings)
+
+        if identity_filter:
+            break
 
         if fetched_record_count < EXPOSED_RECORD_BATCH_SIZE:
             break
@@ -1482,11 +1596,28 @@ def main() -> int:
     if all_findings and prompt_write_csv():
         file_path = write_csv_report(Path.cwd(), all_findings, selected_rule)
         print(f"CSV written to: {file_path}")
-
-    print("Thanks for using Recon Report.")
+        print("------------------------------------------------------------------------")
 
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        while True:
+            exit_code = main()
+            if exit_code == 2:
+                print("Thanks for using Recon Report. Stay safe out there!")
+                raise SystemExit(0)
+            if exit_code != 0:
+                raise SystemExit(exit_code)
+            while True:
+                response = prompt_user("Would you like to start over? [y/N]: ").strip().lower()
+                if response in {"y", "yes"}:
+                    break
+                if response in {"n", "no", ""}:
+                    print("Thanks for using Recon Report. Stay safe out there!")
+                    raise SystemExit(0)
+                print("Invalid selection. Enter Y to start over or N to quit.")
+    except KeyboardInterrupt:
+        print("\nAborted by user.")
+        raise SystemExit(130)
