@@ -33,6 +33,8 @@ PAGE_SIZE = 500
 BATCH_SIZE = 100
 MAX_QUERY_WINDOW = 10_000
 EXPOSED_RECORD_BATCH_SIZE = 100
+COUNT_CAP = 1000
+COUNT_CAP_LABEL = "999+"
 DAY_OPTIONS = (1, 3, 7, 15, 30, 60, 90)
 MIN_SEGMENT_WINDOW = timedelta(minutes=1)
 FALCON_ENV_KEYS = (
@@ -40,7 +42,6 @@ FALCON_ENV_KEYS = (
     "FALCON_CLIENT_SECRET",
     "FALCON_BASE_URL",
 )
-IDENTITY_FILTER_ENV_KEY = "RECON_EMAIL_FILTER"
 DEFAULT_FALCON_BASE_URL = "https://api.eu-1.crowdstrike.com"
 APP_VERSION = "0.02a"
 CONFIG_DIR_NAME = "recon-exposed-credentials-report"
@@ -360,11 +361,12 @@ def print_status(message: str) -> None:
     print(f"[status] {message}")
 
 
-def prompt_user(message: str) -> str:
+def prompt_user(message: str, separator: bool = True) -> str:
     sys.stdout.write(message)
     sys.stdout.flush()
     response = input()
-    print("------------------------------------------------------------------------")
+    if separator:
+        print("------------------------------------------------------------------------")
     return response
 
 
@@ -464,16 +466,9 @@ def apply_falcon_values(values: dict[str, str]) -> None:
             os.environ[key] = value
 
 
-def apply_optional_env_value(name: str, value: str) -> None:
-    if value:
-        os.environ[name] = value
-        return
-    os.environ.pop(name, None)
-
-
 def prompt_non_empty_value(name: str) -> str:
     while True:
-        value = prompt_user(f"Enter {name}: ").strip()
+        value = prompt_user(f"Enter {name}: ", separator=False).strip()
         if value:
             return value
         print(f"{name} cannot be empty.")
@@ -483,9 +478,8 @@ def prompt_secret_value(name: str) -> str:
     while True:
         if sys.stdin.isatty() and sys.stderr.isatty():
             value = getpass.getpass(f"Enter {name}: ").strip()
-            print("------------------------------------------------------------------------")
         else:
-            value = prompt_user(f"Enter {name}: ").strip()
+            value = prompt_user(f"Enter {name}: ", separator=False).strip()
 
         if value:
             return value
@@ -494,50 +488,12 @@ def prompt_secret_value(name: str) -> str:
 
 def prompt_value_with_default(name: str, default: str) -> str:
     while True:
-        value = prompt_user(f"Enter {name} [{default}]: ").strip()
+        value = prompt_user(f"Enter {name} [{default}]: ", separator=False).strip()
         if value:
             return value
         if default:
             return default
         print(f"{name} cannot be empty.")
-
-
-def prompt_identity_filter(dotenv_path: Path) -> str:
-    saved_filter = read_dotenv_values(dotenv_path).get(IDENTITY_FILTER_ENV_KEY, "").strip()
-
-    print("------------------------------------------------------------------------")
-    print("Optional email/domain filter")
-    if saved_filter:
-        print(f"Saved filter: {saved_filter}")
-
-    while True:
-        if saved_filter:
-            response = prompt_user(
-                "Press Enter to keep the saved filter, type D to delete it, or enter a new email/domain filter: "
-            ).strip()
-            lowered = response.lower()
-            if lowered in {"", "n", "no", "keep"}:
-                selected_filter = saved_filter
-            elif lowered in {"d", "delete"}:
-                write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: None})
-                apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
-                print("Saved filter deleted. No email/domain filter will be applied.")
-                return ""
-            else:
-                selected_filter = response
-        else:
-            print("Would you like to filter findings for a specific email address or domain?")
-            response = prompt_user("Enter a value or press Enter to skip: ").strip()
-            if not response:
-                apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, "")
-                print("No email/domain filter will be applied.")
-                return ""
-            selected_filter = response
-
-        write_dotenv_values(dotenv_path, {IDENTITY_FILTER_ENV_KEY: selected_filter})
-        apply_optional_env_value(IDENTITY_FILTER_ENV_KEY, selected_filter)
-        print(f"Using email filter: {selected_filter}")
-        return selected_filter
 
 
 def mask_secret(secret: str) -> str:
@@ -620,9 +576,13 @@ def has_complete_falcon_configuration(dotenv_path: Path) -> bool:
 
 def run_initial_setup(dotenv_path: Path) -> Any:
     print("Initial setup")
-    print(f"Configuration file: {dotenv_path}")
+    print("[status] No configuration was found. We need to set up access first.")
+    print(
+        "[note] Requirement: API client with read scope \"Monitoring rules (Falcon Intelligence Recon)\"."
+    )
+    print("[hint] \"Support and resources\" > \"API clients and keys\".")
     client = prompt_for_valid_falcon_credentials(dotenv_path)
-    print(f"Saved configuration to {dotenv_path}")
+    print("[status] Saving configuration. done")
     return client
 
 
@@ -667,10 +627,10 @@ def ensure_success(response: dict[str, Any], operation: str) -> None:
         return
 
     message_parts = []
-    for error in errors:
-        if isinstance(error, dict):
-            code = error.get("code")
-            message = error.get("message")
+    for entry in errors:
+        if isinstance(entry, dict):
+            code = entry.get("code")
+            message = entry.get("message")
             if code or message:
                 message_parts.append(f"{code or 'error'}: {message or 'Unknown error'}")
 
@@ -701,13 +661,19 @@ def paginate_query(method: Any, operation: str, **query_kwargs: Any) -> list[str
     return results
 
 
-def paginate_query_segment(method: Any, operation: str, **query_kwargs: Any) -> tuple[list[str], bool]:
+def paginate_query_segment(
+    method: Any,
+    operation: str,
+    max_results: int | None = None,
+    **query_kwargs: Any,
+) -> tuple[list[str], bool]:
     results: list[str] = []
     offset = 0
     truncated = False
+    ceiling = MAX_QUERY_WINDOW if max_results is None else min(max_results, MAX_QUERY_WINDOW)
 
-    while offset < MAX_QUERY_WINDOW:
-        limit = min(PAGE_SIZE, MAX_QUERY_WINDOW - offset)
+    while offset < ceiling:
+        limit = min(PAGE_SIZE, ceiling - offset)
         response = method(limit=limit, offset=offset, **query_kwargs)
         ensure_success(response, operation)
         page = [str(item) for item in get_resources(response)]
@@ -720,25 +686,13 @@ def paginate_query_segment(method: Any, operation: str, **query_kwargs: Any) -> 
 
         offset += limit
 
-    if offset >= MAX_QUERY_WINDOW and len(results) >= MAX_QUERY_WINDOW:
+    if max_results is None and offset >= MAX_QUERY_WINDOW and len(results) >= MAX_QUERY_WINDOW:
         truncated = True
 
     return results, truncated
 
 
-def count_notifications_for_rule(client: Any, rule_id: str) -> str:
-    ids, truncated = paginate_query_segment(
-        client.query_notifications,
-        "QueryNotificationsV1",
-        filter=build_rule_filter("rule_id", rule_id),
-    )
-    if truncated:
-        return f"{MAX_QUERY_WINDOW}+"
-
-    return str(len(ids))
-
-
-def count_pairs_in_records(client: Any, ids: list[str], identity_filter: str = "") -> int:
+def count_pairs_in_records(client: Any, ids: list[str]) -> int:
     """Fetch record entities and count unique extractable (username, password) pairs."""
     if not ids:
         return 0
@@ -754,43 +708,42 @@ def count_pairs_in_records(client: Any, ids: list[str], identity_filter: str = "
             if len(usernames) == 1 and len(passwords) == 1:
                 pairs = [(usernames[0], passwords[0])]
         for username, password in pairs:
-            if identity_filter and not finding_matches_identity_filter(username, identity_filter):
-                continue
             seen.add((username, password))
     return len(seen)
 
 
 def count_exposed_records_for_rule(client: Any, rule_id: str) -> str:
-    ids, truncated = paginate_query_segment(
+    ids, _ = paginate_query_segment(
         client.query_notifications_exposed_data_records,
         "QueryNotificationsExposedDataRecordsV1",
+        max_results=COUNT_CAP,
         filter=build_rule_filter("rule.id", rule_id),
     )
-    if truncated:
-        return f"{MAX_QUERY_WINDOW}+"
+    if len(ids) >= COUNT_CAP:
+        return COUNT_CAP_LABEL
 
     return str(count_pairs_in_records(client, ids))
 
 
-def count_exposed_records_in_window(client: Any, rule_id: str, date_window: DateWindow, identity_filter: str = "") -> str:
+def count_exposed_records_in_window(client: Any, rule_id: str, date_window: DateWindow) -> str:
     ids = paginate_segmented_by_date(
         client.query_notifications_exposed_data_records,
         "QueryNotificationsExposedDataRecordsV1",
         "created_date",
         date_window,
         base_filter=build_rule_filter("rule.id", rule_id),
-        max_results=MAX_QUERY_WINDOW,
+        max_results=COUNT_CAP,
     )
-    count = count_pairs_in_records(client, ids, identity_filter)
-    if len(ids) >= MAX_QUERY_WINDOW:
-        return f"{count}+"
+    if len(ids) >= COUNT_CAP:
+        return COUNT_CAP_LABEL
+    count = count_pairs_in_records(client, ids)
     return str(count)
 
 
-def fetch_day_option_counts(client: Any, rule_id: str, identity_filter: str = "") -> dict[int, str]:
+def fetch_day_option_counts(client: Any, rule_id: str) -> dict[int, str]:
     def fetch_one(days: int) -> tuple[int, str]:
         window = build_date_window(days)
-        return days, count_exposed_records_in_window(client, rule_id, window, identity_filter)
+        return days, count_exposed_records_in_window(client, rule_id, window)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(DAY_OPTIONS)) as executor:
         pairs = list(executor.map(fetch_one, DAY_OPTIONS))
@@ -1031,13 +984,19 @@ def paginate_segmented_by_date(
             include_end=include_end,
         )
         combined_filter = join_filters(base_filter, segment_filter)
+        segment_cap: int | None = None
+        if max_results is not None:
+            segment_cap = max_results + skip_results - len(results) - skipped
+            if segment_cap <= 0:
+                break
         segment_results, truncated = paginate_query_segment(
             method,
             operation,
+            max_results=segment_cap,
             filter=combined_filter or None,
         )
 
-        if truncated:
+        if truncated and max_results is None:
             if segment.end - segment.start <= MIN_SEGMENT_WINDOW:
                 print(
                     f"Warning: {operation} still exceeded {MAX_QUERY_WINDOW} results within a "
@@ -1064,11 +1023,6 @@ def paginate_segmented_by_date(
     return results
 
 
-def notification_ids_from_records(records: list[dict[str, Any]]) -> list[str]:
-    notification_ids = [record_notification_id(record) for record in records]
-    return dedupe_preserve_order(notification_id for notification_id in notification_ids if notification_id)
-
-
 def fetch_findings_batch(
     client: Any,
     rules: list[dict[str, Any]],
@@ -1077,7 +1031,6 @@ def fetch_findings_batch(
     exposed_rule_filter: str,
     skip_results: int,
     max_results: int | None,
-    identity_filter: str,
 ) -> tuple[list[Finding], int]:
     exposed_record_ids = run_with_spinner(
         "Querying exposed data records... (this may take a little while)",
@@ -1102,7 +1055,6 @@ def fetch_findings_batch(
         rules,
         selected_rule,
         records,
-        identity_filter,
     )
     return findings, len(exposed_record_ids)
 
@@ -1306,23 +1258,10 @@ def build_rule_lookup(rules: Iterable[dict[str, Any]]) -> dict[str, dict[str, st
     return lookup
 
 
-def finding_matches_identity_filter(username: str, identity_filter: str) -> bool:
-    candidate = username.strip().lower()
-    normalized_filter = identity_filter.strip().lower()
-    if not normalized_filter:
-        return True
-    if "@" in normalized_filter and not normalized_filter.startswith("@"):
-        return candidate == normalized_filter
-
-    domain = normalized_filter[1:] if normalized_filter.startswith("@") else normalized_filter
-    return candidate == domain or candidate.endswith(f"@{domain}")
-
-
 def build_findings(
     rules: list[dict[str, Any]],
     selected_rule: SelectedRule,
     records: list[dict[str, Any]],
-    identity_filter: str = "",
 ) -> list[Finding]:
     findings: list[Finding] = []
     rules_by_id = build_rule_lookup(rules)
@@ -1355,8 +1294,6 @@ def build_findings(
         )
 
         for username, password in credential_pairs:
-            if identity_filter and not finding_matches_identity_filter(username, identity_filter):
-                continue
             findings.append(
                 Finding(
                     rule_name=rule_name,
@@ -1368,12 +1305,6 @@ def build_findings(
             )
 
     return findings
-
-
-def format_finding_line(finding: Finding) -> str:
-    usernames = ", ".join(finding.usernames)
-    passwords = ", ".join(finding.passwords)
-    return f"Username: {usernames} | Password: {passwords}"
 
 
 def aggregate_finding_rows(findings: list[Finding]) -> list[tuple[str, str, str, str]]:
@@ -1495,7 +1426,6 @@ def main() -> int:
                 "Verifying exposed credentials for monitoring rules...", build_rule_choices, rules, client
             )
             print_status(f"Loaded {len(rules)} monitoring rules... {len(rule_choices)} include exposed credentials done")
-            identity_filter = prompt_identity_filter(dotenv_path)
             selected_rule = prompt_rule_selection(rule_choices)
 
             if args.days is not None:
@@ -1509,7 +1439,6 @@ def main() -> int:
                         fetch_day_option_counts,
                         client,
                         rule_id_for_counts,
-                        identity_filter,
                     )
                 selected_days = prompt_day_selection(day_counts)
             date_window = build_date_window(selected_days)
@@ -1518,9 +1447,6 @@ def main() -> int:
 
             if selected_rule:
                 print(f"Selected monitoring rule: {selected_rule.rule_name}", file=sys.stderr)
-
-            if identity_filter:
-                print(f"Applying email filter: {identity_filter}", file=sys.stderr)
 
             if date_window:
                 print(
@@ -1542,7 +1468,6 @@ def main() -> int:
     shown_records = 0
 
     while True:
-        batch_limit = None if identity_filter else EXPOSED_RECORD_BATCH_SIZE
         findings, fetched_record_count = fetch_findings_batch(
             client,
             rules,
@@ -1550,8 +1475,7 @@ def main() -> int:
             date_window,
             exposed_rule_filter,
             skip_results=shown_records,
-            max_results=batch_limit,
-            identity_filter=identity_filter,
+            max_results=EXPOSED_RECORD_BATCH_SIZE,
         )
 
         if fetched_record_count == 0:
@@ -1564,9 +1488,6 @@ def main() -> int:
         shown_records += fetched_record_count
         all_findings.extend(findings)
         print_report(findings)
-
-        if identity_filter:
-            break
 
         if fetched_record_count < EXPOSED_RECORD_BATCH_SIZE:
             break
@@ -1583,7 +1504,6 @@ def main() -> int:
                 exposed_rule_filter,
                 skip_results=shown_records,
                 max_results=None,
-                identity_filter=identity_filter,
             )
             if fetched_record_count == 0:
                 print("No more exposed data records were found.")
