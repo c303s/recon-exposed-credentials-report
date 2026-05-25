@@ -575,12 +575,13 @@ def has_complete_falcon_configuration(dotenv_path: Path) -> bool:
 
 
 def run_initial_setup(dotenv_path: Path) -> Any:
-    print("Initial setup")
+    print("Welcome to Recon Report. This is the initial setup.")
     print("[status] No configuration was found. We need to set up access first.")
     print(
         "[note] Requirement: API client with read scope \"Monitoring rules (Falcon Intelligence Recon)\"."
     )
     print("[hint] \"Support and resources\" > \"API clients and keys\".")
+    print("------------------------------------------------------------------------")
     client = prompt_for_valid_falcon_credentials(dotenv_path)
     print("[status] Saving configuration. done")
     return client
