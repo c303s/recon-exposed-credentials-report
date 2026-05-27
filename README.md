@@ -1,6 +1,6 @@
 # Recon Exposed Credentials Report
 
-Generate a report of exposed usernames and passwords from CrowdStrike Falcon Intelligence Recon, grouped by monitoring rule.
+Reports exposed usernames and passwords from CrowdStrike Falcon Intelligence Recon, grouped by monitoring rule.
 
 > **Version 0.02a** — Not an official CrowdStrike tool.
 
