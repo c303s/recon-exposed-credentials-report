@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-"""Generate a CrowdStrike Recon report of exposed passwords grouped by monitoring rule.
+"""CrowdStrike Recon report of exposed credentials grouped by monitoring rule.
 
-This script reads Falcon API credentials from environment variables or a local .env file,
+Reads Falcon API credentials from environment variables or a local .env file,
 retrieves Recon monitoring rules, notification details, and exposed data records, and prints
-exposed-password findings grouped by monitoring rule.
+exposed-credential findings grouped by monitoring rule.
 
 To avoid CrowdStrike Recon's 10,000-row pagination ceiling, the script applies a date filter
 to notification queries by default. Override it with command-line arguments if needed.
