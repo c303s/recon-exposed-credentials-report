@@ -53,8 +53,8 @@ Credentials are stored in `./.env` with mode `0600`. To re-run setup later:
 
 1. **Monitoring rule selection.** Lists active rules that have at least one extractable exposed credential pair. Typosquatting rules are excluded. Each entry shows the credential-pair count (capped at `999+`), creation date, and last change date.
 2. **Date filter.** Pick how far back to look (1, 3, 7, 15, 30, 60, or 90 days). Each option shows the credential-pair count for that window. Default is 1 day.
-3. **Report output.** Findings are printed grouped by monitoring rule. Duplicate `(username, password)` pairs are deduplicated across records.
-4. **CSV export.** You are asked whether to write findings to a CSV file in the current directory.
+3. **Report output.** Findings are printed grouped by monitoring rule in the format `Username: … | Password: …`. Duplicate `(username, password)` pairs are deduplicated across records.
+4. **CSV export.** You are asked whether to write findings to a CSV file in the current directory. The CSV includes the columns `monitoring_rule`, `notification_id`, `username`, and `password`.
 5. **Start over or quit.**
 
 ## Command-line options

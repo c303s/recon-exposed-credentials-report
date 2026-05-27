@@ -1391,14 +1391,14 @@ def print_report(findings: list[Finding]) -> None:
 
     ordered_rows = aggregate_finding_rows(findings)
     last_rule_name = None
-    for rule_name, notification_id, username, password in ordered_rows:
+    for rule_name, _notification_id, username, password in ordered_rows:
         if rule_name != last_rule_name:
             if last_rule_name is not None:
                 print()
             print(f"Monitoring Rule: {rule_name}")
             print("-" * 72)
             last_rule_name = rule_name
-        print(f"Username: {username} | Password: {password} [{notification_id}]")
+        print(f"Username: {username} | Password: {password}")
 
 
 def main() -> int:
