@@ -54,25 +54,6 @@ download_source() {
   fi
 }
 
-install_requirements() {
-  local requirements_path="$INSTALL_DIR/requirements.txt"
-  if [[ ! -f "$requirements_path" ]]; then
-    return
-  fi
-
-  if ! grep -Eq '^[[:space:]]*[^#[:space:]]' "$requirements_path"; then
-    return
-  fi
-
-  print_step "Installing Python requirements"
-  if ! python3 -m pip --version >/dev/null 2>&1; then
-    echo "Error: python3 is available, but pip is required to install dependencies." >&2
-    exit 1
-  fi
-
-  python3 -m pip install --user -r "$requirements_path"
-}
-
 create_launcher() {
   cat > "$LAUNCHER_PATH" <<EOF
 #!/usr/bin/env bash
@@ -97,7 +78,7 @@ install_files() {
     cp "$INSTALL_DIR/.env.bak" "$existing_env_bak_backup"
   fi
 
-  for file_name in "$SCRIPT_NAME" "README.md" "requirements.txt" "install.sh" ".gitignore"; do
+  for file_name in "$SCRIPT_NAME" "README.md" "install.sh" ".gitignore"; do
     if [[ -f "$SOURCE_DIR/$file_name" ]]; then
       cp "$SOURCE_DIR/$file_name" "$INSTALL_DIR/$file_name"
     fi
@@ -133,7 +114,6 @@ main() {
   need_command python3
   download_source
   install_files
-  install_requirements
   launch_application
 }
 
