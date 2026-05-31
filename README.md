@@ -6,9 +6,10 @@ Reports exposed usernames and passwords from CrowdStrike Falcon Intelligence Rec
 
 ## Requirements
 
-- `bash`, `curl`, and `python3` on the local machine.
+- **Python 3.11 or later.** Download from [python.org](https://www.python.org/downloads/) if needed.
 - A CrowdStrike Falcon API client with **read** scope to **Monitoring rules (Falcon Intelligence Recon)**.
   Create one in the Falcon console under **Support and resources** > **API clients and keys**.
+- At least one **Exposed Data Records** monitoring rule must be active in the Falcon console before the script can return results.
 
 ## Install
 
@@ -24,10 +25,28 @@ Files placed in the current directory:
 ./install.sh
 ./.gitignore
 ./recon_exposed_credentials_report.py
-./requirements.txt
 ./README.md
 ./recon-exposed-credentials-report
 ```
+
+### Windows
+
+Windows does not ship with `bash` or `curl`, so the one-liner above will not work. Install manually instead:
+
+1. Install [Python 3](https://www.python.org/downloads/windows/) (tick **Add python.exe to PATH** during setup).
+2. Open **PowerShell** and run:
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/c303s/recon-exposed-credentials-report/main/recon_exposed_credentials_report.py" -OutFile "recon_exposed_credentials_report.py"
+```
+
+3. Start the script:
+
+```powershell
+python recon_exposed_credentials_report.py
+```
+
+Skip to **Setup** below — first-run setup works the same on Windows.
 
 ## Setup
 
