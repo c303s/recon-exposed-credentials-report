@@ -313,7 +313,7 @@ def print_logo() -> None:
     """
     print(logo)
     print("Query CrowdStrike Recon for exposed credential findings by monitoring rule.")
-    print(f"Version {APP_VERSION} | built on {datetime.now().strftime('%d.%m.%Y')} | This is not an official CrowdStrike tool.")
+    print(f"Version {APP_VERSION} | built on 31.05.2026 | This is not an official CrowdStrike tool.")
     print()
 
 
@@ -581,6 +581,7 @@ def run_initial_setup(dotenv_path: Path) -> Any:
         "[note] Requirement: API client with read scope \"Monitoring rules (Falcon Intelligence Recon)\"."
     )
     print("[hint] \"Support and resources\" > \"API clients and keys\".")
+    print("[hint] Monitoring rules must be configured in the Falcon console before they can be queried.")
     print("------------------------------------------------------------------------")
     client = prompt_for_valid_falcon_credentials(dotenv_path)
     print("[status] Saving configuration. done")
